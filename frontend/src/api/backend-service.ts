@@ -1,6 +1,15 @@
-import { request } from './client'
+import { request, fetchJson } from './client'
 import { moduleMeta } from '@/data/modules'
-import type { ActionResult, EntryRow, OverviewResult, PageResult } from '@/data/types'
+import type {
+  ActionResult,
+  CoverageAnalysisResult,
+  CoverageBatchSummary,
+  CoverageInsight,
+  CoverageSnapshot,
+  EntryRow,
+  OverviewResult,
+  PageResult,
+} from '@/data/types'
 
 export { moduleMeta }
 
@@ -58,4 +67,64 @@ export async function loadOverview(): Promise<OverviewResult> {
   const response = await request('/api/overview')
   if (!response.ok) throw new Error('运营概览读取失败')
   return await response.json()
+}
+
+// ── 预测覆盖视图 ──
+export async function listCoverageBatches(): Promise<CoverageBatchSummary[]> {
+  const payload = await fetchJson<{ items: CoverageBatchSummary[] }>('/api/predict-coverage/batches')
+  return payload.items
+}
+
+export async function loadCoverage(batchId: number): Promise<CoverageSnapshot> {
+  return await fetchJson<CoverageSnapshot>(`/api/predict-coverage/batches/${batchId}`)
+}
+
+export async function submitReceipt(
+  batchId: number,
+  values: Record<string, unknown>,
+): Promise<CoverageAnalysisResult> {
+  const response = await request(`/api/predict-coverage/batches/${batchId}/receipts`, {
+    method: 'POST',
+    body: JSON.stringify({ values }),
+  })
+  return await response.json()
+}
+
+export async function submitCoverageAnalysis(
+  batchId: number,
+  values: Record<string, unknown> = {},
+): Promise<CoverageAnalysisResult> {
+  const response = await request(`/api/predict-coverage/batches/${batchId}/analyses`, {
+    method: 'POST',
+    body: JSON.stringify({ values }),
+  })
+  return await response.json()
+}
+
+export async function listCoverageAnalyses(batchId: number): Promise<CoverageInsight[]> {
+  const payload = await fetchJson<{ items: CoverageInsight[] }>(
+    `/api/predict-coverage/analyses?batch_id=${batchId}`,
+  )
+  return payload.items
+}
+
+export type CoverageEvidence = {
+  ok: boolean
+  insight: CoverageInsight
+  score: { numerator: number; denominator: number; ratio: string; coverage_state: string }
+  partitions: string[]
+  missing_partitions: string[]
+  receipts: {
+    receipt_id: string
+    shard_id: string
+    version: number
+    status: string
+    delivery: string
+    row_count: number | null
+    received_at: string | null
+  }[]
+}
+
+export async function loadCoverageEvidence(resultId: number): Promise<CoverageEvidence> {
+  return await fetchJson<CoverageEvidence>(`/api/predict-coverage/analyses/${resultId}`)
 }

@@ -232,6 +232,93 @@ def test_chain9_corr_to_selection():
     assert_ok(r3, "push_selected_to_iv_analysis")
 
 
+# ── 链路10: 预测分片回执 → 覆盖视图 → 高分占比洞察 ──
+def test_chain10_coverage_receipts_to_insight():
+    """验证: 重复行键只计一次、零行成功≠缺回执、迟到/重送回执版本、受限与完整比例与原据回查。"""
+    from app.services.predict_coverage import predict_coverage_service as coverage
+    from app.store import store, Store
+    import app.store as store_module
+
+    # 每个用例用一份全新仓库，避免与其他链路互相污染。
+    store_module.store.__dict__.update(Store().__dict__)
+    mining = service_for("mining_result")
+
+    batch_id = 4
+    snap = coverage.coverage(batch_id)
+
+    # A、B 各带 user_1001（重复行键），B 另有低分 user_1002；D 成功回零行；C 超时缺回执。
+    assert snap["covered_rows"] == 2, snap
+    assert snap["numerator"] == 1 and snap["denominator"] == 2, snap
+    assert snap["ratio_fraction"] == "1/2"
+    assert snap["duplicate_rows"] == 1, snap
+    assert snap["coverage_state"] == "受限"
+    assert snap["missing_shards"] == ["C"]
+    assert snap["planned_rows"] == 5 and snap["covered_rows"] != snap["planned_rows"]
+
+    shard_by_id = {shard["shard_id"]: shard for shard in snap["shards"]}
+    assert shard_by_id["D"]["status"] == "已确认" and shard_by_id["D"]["zero_row"] is True
+    assert shard_by_id["D"]["row_count"] == 0
+    assert shard_by_id["C"]["status"] == "缺回执" and shard_by_id["C"]["row_count"] is None
+    assert shard_by_id["D"]["status"] != shard_by_id["C"]["status"]
+
+    # 迟到回执补齐前提交：有可用比例，但结论受限，记录写明分子分母和采用分区。
+    first = mining.submit_coverage_analysis(batch_id)
+    assert_ok(first, "submit before late receipt")
+    insight = first["insight"]
+    assert (insight["分子"], insight["分母"]) == (1, 2)
+    assert insight["结论状态"] == "受限"
+    assert insight["采用分区"] == ["A", "B", "D"]
+    assert insight["缺失分区"] == ["C"]
+    assert insight["预测批次"] == snap["batch_code"]
+    assert insight["预计行数"] == 5
+
+    # C 迟到补交一名高分用户；B 重送（同两行，新版本）。
+    r_c = coverage.submit_receipt(batch_id, {
+        "shard_id": "C", "status": "已确认",
+        "rows": [{"row_key": "user_1003", "score": 95, "high_score_flag": True}],
+    })
+    assert_ok(r_c, "late receipt C")
+    assert r_c["receipt"]["delivery"] == "late" and r_c["receipt"]["version"] == 2
+    r_b = coverage.submit_receipt(batch_id, {
+        "shard_id": "B", "status": "已确认",
+        "rows": [
+            {"row_key": "user_1001", "score": 92, "high_score_flag": True},
+            {"row_key": "user_1002", "score": 35, "high_score_flag": False},
+        ],
+    })
+    assert_ok(r_b, "resend B")
+    assert r_b["receipt"]["delivery"] == "resend" and r_b["receipt"]["version"] == 2
+
+    snap2 = coverage.coverage(batch_id)
+    assert snap2["coverage_state"] == "完整"
+    assert snap2["covered_rows"] == 3
+    assert snap2["ratio_fraction"] == "2/3"
+    assert snap2["duplicate_rows"] == 1, "重送不应把重复行重复计入"
+
+    second = mining.submit_coverage_analysis(batch_id)
+    assert_ok(second, "submit after receipts complete")
+    insight2 = second["insight"]
+    assert (insight2["分子"], insight2["分母"]) == (2, 3)
+    assert insight2["结论状态"] == "完整"
+    assert insight2["采用分区"] == ["A", "B", "C", "D"]
+
+    # 已记录的比例和覆盖分区按原据回查：第一份仍是 1/2 + A/B/D，第二份是 2/3 + A/B/C/D。
+    ev1 = coverage.analysis_evidence(insight["id"])
+    assert ev1["score"]["numerator"] == 1 and ev1["score"]["denominator"] == 2
+    assert ev1["partitions"] == ["A", "B", "D"]
+    assert {r["receipt_id"] for r in ev1["receipts"]} == {
+        "RCPT-4-A-v1", "RCPT-4-B-v1", "RCPT-4-D-v1"
+    }
+    ev2 = coverage.analysis_evidence(insight2["id"])
+    assert ev2["score"]["numerator"] == 2 and ev2["score"]["denominator"] == 3
+    assert ev2["partitions"] == ["A", "B", "C", "D"]
+    assert "RCPT-4-C-v2" in {r["receipt_id"] for r in ev2["receipts"]}
+
+    # 未切片/无回执的批次提交分析时明确“等待”，不生成虚假比例。
+    waiting = mining.submit_coverage_analysis(1)
+    assert waiting.get("waiting") is True
+    assert "insight" not in waiting
+
 if __name__ == "__main__":
     tests = [
         test_chain1_source_to_snapshot,
@@ -243,6 +330,7 @@ if __name__ == "__main__":
         test_chain7_snapshot_restore,
         test_chain8_schedule_and_export,
         test_chain9_corr_to_selection,
+        test_chain10_coverage_receipts_to_insight,
     ]
     passed = 0
     failed = 0

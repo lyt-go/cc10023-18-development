@@ -11,12 +11,14 @@
 .
 ├── frontend/                 Vue 3 + Vite + TypeScript 前端
 │   ├── src/views/WorkbenchView.vue|tsx  全部模块共享工作台
+│   ├── src/views/CoverageView.vue       预测覆盖情况（分片回执/高分占比）
 │   ├── src/data/modules.ts              18个业务模块配置
 │   ├── src/api/              统一请求封装
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
-│   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
+│   ├── app/routers/resource.py  通用查询/导出/登记/动作接口 + 覆盖视图接口
 │   ├── app/services/<key>.py    每个模块独立领域逻辑
+│   ├── app/services/predict_coverage.py  预测分片回执与覆盖计算
 │   ├── app/services/base.py     共享服务骨架
 │   └── app/store.py          内存数据仓库与示例数据
 ├── .gitignore
@@ -68,6 +70,27 @@ npm run dev
 | 数据导出管理 | `data_export` | 导出任务 | 任务编号、数据来源、导出范围 |
 | 流水线调度 | `pipeline_schedule` | 调度配置 | 调度编号、关联流水线、Cron表达式 |
 | 业务场景标注 | `scenario_label` | 场景标注 | 标注编号、场景名称、关联特征 |
+
+## 预测覆盖情况
+
+批量预测任务切片后只有预计行数，覆盖视图用分片数据回执核对实际覆盖的人群：
+
+- 页面：`/predict-coverage`；每个已确认的行键只计一次。
+- 分片状态区分「已确认（含成功回零行）」与「缺回执」，预计行数只作对照，不替代实收人数。
+- 迟到回执、重送回执都会追加新版本，旧版本留作原据回查。
+- 「挖掘结果管理」读取覆盖视图的已确认范围，按实际入选行计算高分用户占比；
+  洞察记录写明分子、分母、预测批次和实际采用的分区，缺片时结论标记为「受限」。
+
+接口：
+
+```text
+GET  /api/predict-coverage/batches              批次覆盖状态列表
+GET  /api/predict-coverage/batches/{id}         覆盖明细（分片/人群/分子分母）
+POST /api/predict-coverage/batches/{id}/receipts 登记分片回执
+POST /api/predict-coverage/batches/{id}/analyses 提交高分占比分析
+GET  /api/predict-coverage/analyses?batch_id=   已完成覆盖洞察
+GET  /api/predict-coverage/analyses/{result_id} 按原据回查
+```
 
 ## 约定
 

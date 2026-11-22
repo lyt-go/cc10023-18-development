@@ -4,19 +4,30 @@
 """
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from app.seed import SEED_ROWS
+from app.seed_coverage import COVERAGE_SEED_ROWS
+
+
+def _merged_seed() -> dict[str, list[dict[str, Any]]]:
+    """模块样例与覆盖视图样例合并；同表按行追加，避免覆盖已有业务数据。"""
+    merged: dict[str, list[dict[str, Any]]] = {
+        name: [copy.deepcopy(row) for row in rows] for name, rows in SEED_ROWS.items()
+    }
+    for name, rows in COVERAGE_SEED_ROWS.items():
+        merged.setdefault(name, []).extend(copy.deepcopy(row) for row in rows)
+    return merged
 
 
 class Store:
     def __init__(self) -> None:
-        self._tables: dict[str, list[dict[str, Any]]] = {
-            name: [dict(row) for row in rows] for name, rows in SEED_ROWS.items()
-        }
+        self._tables = _merged_seed()
 
     def module_names(self) -> list[str]:
-        return sorted(self._tables)
+        """对外可见的业务模块；下划线开头的是覆盖视图的内部凭据表。"""
+        return sorted(name for name in self._tables if not name.startswith("_"))
 
     def rows(self, module: str) -> list[dict[str, Any]]:
         return self._tables.setdefault(module, [])

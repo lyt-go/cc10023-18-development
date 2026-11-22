@@ -10,6 +10,8 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas import ActionPayload, ActionResult, EntryPayload, PageResult
 from app.services import service_for
+from app.services.predict_coverage import predict_coverage_service
+from app.store import store
 
 router = APIRouter(prefix="/api", tags=["业务资源"])
 
@@ -39,6 +41,55 @@ def list_entries(
     items, total = service.list_entries(
         filters=filters, keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+# ── 预测覆盖视图：固定路径必须先于 /{module}/{entry_id} 注册 ──
+@router.get("/predict-coverage/batches")
+def list_coverage_batches() -> dict[str, Any]:
+    """列出预测批次的覆盖状态，供覆盖视图左侧批次列表使用。"""
+    return {"items": predict_coverage_service.list_batches()}
+
+
+@router.get("/predict-coverage/batches/{batch_id}")
+def get_coverage(batch_id: int) -> dict[str, Any]:
+    """读取预测分片回执，返回已确认样本覆盖、缺失分片与高分占比。"""
+    return predict_coverage_service.coverage(batch_id)
+
+
+@router.post("/predict-coverage/batches/{batch_id}/receipts", response_model=ActionResult)
+def submit_receipt(batch_id: int, payload: EntryPayload) -> ActionResult:
+    """登记分片回执：迟到补交和重送都会追加新版本，旧版本保留用于回查。"""
+    result = predict_coverage_service.submit_receipt(batch_id, payload.values)
+    return ActionResult(ok=bool(result.get("ok")), message=str(result.get("message", "")),
+                        entry=result)
+
+
+@router.post("/predict-coverage/batches/{batch_id}/analyses", response_model=ActionResult)
+def submit_coverage_analysis(batch_id: int, payload: EntryPayload) -> ActionResult:
+    """挖掘结果管理读取覆盖视图的已确认范围，按实际入选行提交高分占比分析。"""
+    result = service_for("mining_result").submit_coverage_analysis(batch_id, payload.values)
+    return ActionResult(ok=bool(result.get("ok")), message=str(result.get("message", "")),
+                        entry=result)
+
+
+@router.get("/predict-coverage/analyses")
+def list_coverage_analyses(batch_id: int | None = Query(default=None)) -> dict[str, Any]:
+    """已完成洞察列表；覆盖分析按批次筛选，便于判断本轮是否已有可用比例。"""
+    mining = service_for("mining_result")
+    batch_ids = (
+        [batch_id] if batch_id is not None
+        else [int(row["id"]) for row in store.rows("predict_batch")]
+    )
+    items: list[dict[str, Any]] = []
+    for bid in batch_ids:
+        items.extend(mining.list_coverage_analyses(bid))
+    return {"items": items}
+
+
+@router.get("/predict-coverage/analyses/{result_id}")
+def get_coverage_analysis(result_id: int) -> dict[str, Any]:
+    """按原据回查一条覆盖分析：分子、分母、采用分区与原始回执。"""
+    return predict_coverage_service.analysis_evidence(result_id)
 
 
 @router.get("/{module}/export")
